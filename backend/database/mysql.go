@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-//go:embed sql/*.sql
+//go:embed sql/ddl/*.sql sql/dml/*.sql
 var queries embed.FS
 var ErrConflict = errors.New("database state changed")
 
@@ -42,6 +42,9 @@ func ConfigFromEnvironment() (Config, error) {
 		if e = json.Unmarshal(b, &c); e != nil {
 			return c, errors.New("invalid database config JSON")
 		}
+	}
+	if ca := os.Getenv("DATABASE_CA_FILE"); ca != "" {
+		c.CAFile = ca
 	}
 	return c, nil
 }
@@ -100,19 +103,11 @@ func Open(ctx context.Context, c Config) (*Store, error) {
 	return &Store{db: db}, nil
 }
 func query(name string) string {
-	b, e := queries.ReadFile("sql/" + name)
+	b, e := queries.ReadFile("sql/dml/" + name)
 	if e != nil {
 		panic(e)
 	}
 	return string(b)
-}
-func (s *Store) Migrate(ctx context.Context) error {
-	for _, name := range []string{"001_init.sql", "002_users.sql", "003_endpoints.sql", "004_runtimes.sql", "005_services.sql", "006_endpoint_members.sql", "007_service_members.sql", "008_relational_sync.sql", "seed_owner.sql"} {
-		if _, e := s.db.ExecContext(ctx, query(name)); e != nil {
-			return fmt.Errorf("migration %s: %w", name, e)
-		}
-	}
-	return nil
 }
 func (s *Store) Initialize(ctx context.Context, initial []byte) ([]byte, error) {
 	if _, e := decodeRelations(initial); e != nil {

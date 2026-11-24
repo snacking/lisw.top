@@ -9,6 +9,7 @@ test -f /etc/lisw-panel/database.json
 sudo install -d "$release"
 sudo tar -xzf "$archive" -C "$release"
 (cd "$release" && sha256sum --check SHA256SUMS)
+sudo env DATABASE_CONFIG_FILE=/etc/lisw-panel/database.json DATABASE_CA_FILE="$release/certs/aiven-ca.pem" "$release/panel" --migrate
 previous=$(readlink -f /opt/lisw-panel/current || true)
 sudo ln -sfn "$release" /opt/lisw-panel/current
 sudo cp "$release/panel.service" /etc/systemd/system/lisw-panel.service

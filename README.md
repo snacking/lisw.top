@@ -13,7 +13,7 @@ WSL 实际为 mirrored，Windows 到 localhost 的 HTTP 已验证。此前无法
 
 ## 数据库
 数据库独立于 backend/database：mysql.go 管理连接、CA 校验 TLS、连接池和持久化；sql/ 存放 DDL 与参数化 DML，certs/ 仅保存公开 CA。
-已建立用户、Endpoint、运行节点、服务及两级成员权限关系表，详见 docs/schema.md。已有 JSON 快照保留为兼容读模型；关系表和快照在同一事务中保存，并用全局 version 做乐观并发控制。启动时幂等建表、回填现有数据；多实例每 5 秒同步，实例内修改即时经 SSE 通知。
+已建立用户、Endpoint、运行节点、服务及两级成员权限关系表，详见 docs/schema.md。已有 JSON 快照保留为兼容读模型；关系表和快照在同一事务中保存，并用全局 version 做乐观并发控制。部署时执行版本迁移、启动时检查结构并回填现有数据；多实例每 5 秒同步，实例内修改即时经 SSE 通知。
 
 连接配置优先读取 DATABASE_CONFIG_FILE 指定的私有 JSON（字段 url、caFile）；也可用 DATABASE_URL、DATABASE_CA_FILE。本机私有文件位于 ~/.config/lisw-panel/database.json，权限 600，不在 Git 内。无数据库配置时仍支持内存演示，配置存在但连接失败则启动失败，不会静默退回内存。
 
@@ -38,3 +38,5 @@ cd ../frontend && npm run build
 ```
 Endpoint 区分入口 IP/域名、Runtime 表示实际部署机器；端点管理员可管理全部服务，服务管理员只操作授权服务。服务接口后续可注册 Minecraft / TeamSpeak 驱动。成员管理写接口、真实认证和真实服务控制仍属后续范围。
 详见 docs/interaction.md、docs/api.md、docs/infrastructure.md、docs/verification.md。
+
+DDL 与 DML 已分别存放于 backend/database/sql/ddl、sql/dml。部署用 panel --migrate 显式执行带锁、版本和校验和的迁移；普通应用启动不执行 DDL。详见 docs/schema.md 的发布规则。

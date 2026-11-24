@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"lisw.top/panel/database"
 	"log"
@@ -420,20 +421,35 @@ func (a *App) syncDatabase(ctx context.Context) error {
 	return nil
 }
 func main() {
+	migrate := flag.Bool("migrate", false, "apply pending schema migrations and exit")
+	flag.Parse()
 	a := &App{Store: seed(), Drivers: map[string]ServiceDriver{"hysteria2": MockDriver{"hysteria2"}, "vless": MockDriver{"vless"}}, Cache: MockDependencies{}, Mail: MockDependencies{}}
 	a.DatabaseMode = "memory"
 	cfg, err := database.ConfigFromEnvironment()
 	if err != nil {
 		log.Fatal(err)
 	}
+	if *migrate && cfg.URL == "" {
+		log.Fatal("database config required for migration")
+	}
 	if cfg.URL != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		db, err := database.Open(ctx, cfg)
 		if err != nil {
 			cancel()
 			log.Fatal(err)
 		}
-		if err = db.Migrate(ctx); err != nil {
+		if *migrate {
+			err = db.Migrate(ctx)
+			cancel()
+			db.Close()
+			if err != nil {
+				log.Fatal(err)
+			}
+			log.Print("schema migration complete")
+			return
+		}
+		if err = db.CheckSchema(ctx); err != nil {
 			cancel()
 			log.Fatal("database migration failed")
 		}
