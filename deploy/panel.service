@@ -1,0 +1,17 @@
+[Unit]
+Description=lisw mock panel (loopback preview)
+After=network.target
+[Service]
+Type=simple
+DynamicUser=yes
+WorkingDirectory=/opt/lisw-panel/current
+ExecStart=/opt/lisw-panel/current/panel
+Environment=LISTEN_ADDR=127.0.0.1:18081
+Environment=STATIC_DIR=/opt/lisw-panel/current/dist
+Restart=on-failure
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+[Install]
+WantedBy=multi-user.target
