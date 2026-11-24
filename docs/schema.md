@@ -27,7 +27,7 @@ erDiagram
 ```
 
 ## 初始化记录
-- 用户 id=admin，username=snacking，display_name=Snacking，github_username=snacking，platform_role=admin，is_demo=false。沿用 admin ID 保持已有会话与授权兼容；邮箱和密码未设置，不猜测个人信息。登录注册仍按既定需求暂不验证。
+- 用户 id=admin，username=snacking，display_name=Snacking，github_username=snacking，platform_role=admin，is_demo=false。沿用 admin ID 保持已有会话与授权兼容；邮箱未设置；密码已通过一次性数据库操作设置，不写入代码仓库。登录注册仍按既定需求暂不验证。
 - Endpoint id=racknerd，地址 198.12.74.38，类型 ipv4，provider=RackNerd，region=美国 · 洛杉矶，owner_user_id=admin。
 - Runtime id=vps，host_address=198.12.74.38，表示该 VPS 本机部署。
 - hy2 / Hysteria 2 与 vless / VLESS · Reality 从现有快照迁移，保留当前配置、版本、revision、成员权限；仍为 mock 控制，未读取或写入真实服务密钥。
