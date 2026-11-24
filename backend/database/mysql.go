@@ -106,12 +106,16 @@ func query(name string) string {
 	return string(b)
 }
 func (s *Store) Migrate(ctx context.Context) error {
-	_, e := s.db.ExecContext(ctx, query("001_init.sql"))
-	return e
+	for _, name := range []string{"001_init.sql", "002_users.sql", "003_endpoints.sql", "004_runtimes.sql", "005_services.sql", "006_endpoint_members.sql", "007_service_members.sql", "008_relational_sync.sql", "seed_owner.sql"} {
+		if _, e := s.db.ExecContext(ctx, query(name)); e != nil {
+			return fmt.Errorf("migration %s: %w", name, e)
+		}
+	}
+	return nil
 }
 func (s *Store) Initialize(ctx context.Context, initial []byte) ([]byte, error) {
-	if !json.Valid(initial) {
-		return nil, errors.New("invalid seed JSON")
+	if _, e := decodeRelations(initial); e != nil {
+		return nil, e
 	}
 	if _, e := s.db.ExecContext(ctx, query("insert_state.sql"), initial); e != nil {
 		return nil, e
@@ -119,19 +123,47 @@ func (s *Store) Initialize(ctx context.Context, initial []byte) ([]byte, error) 
 	return s.Load(ctx)
 }
 func (s *Store) Load(ctx context.Context) ([]byte, error) {
+	tx, e := s.db.BeginTx(ctx, nil)
+	if e != nil {
+		return nil, e
+	}
+	defer tx.Rollback()
 	var b []byte
 	var version uint64
-	e := s.db.QueryRowContext(ctx, query("select_state.sql")).Scan(&b, &version)
-	if e == nil {
-		s.version = version
+	if e = tx.QueryRowContext(ctx, query("select_state_for_update.sql")).Scan(&b, &version); e != nil {
+		return nil, e
 	}
-	return b, e
+	var synced uint64
+	e = tx.QueryRowContext(ctx, query("select_relational_sync.sql")).Scan(&synced)
+	if e != nil && !errors.Is(e, sql.ErrNoRows) {
+		return nil, e
+	}
+	if synced != version {
+		state, e := decodeRelations(b)
+		if e != nil {
+			return nil, e
+		}
+		if e = writeRelations(ctx, tx, state, version); e != nil {
+			return nil, e
+		}
+	}
+	if e = tx.Commit(); e != nil {
+		return nil, e
+	}
+	s.version = version
+	return b, nil
 }
 func (s *Store) Save(ctx context.Context, b []byte) error {
-	if !json.Valid(b) {
-		return errors.New("invalid state JSON")
+	state, e := decodeRelations(b)
+	if e != nil {
+		return e
 	}
-	result, e := s.db.ExecContext(ctx, query("update_state.sql"), b, s.version)
+	tx, e := s.db.BeginTx(ctx, nil)
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback()
+	result, e := tx.ExecContext(ctx, query("update_state.sql"), b, s.version)
 	if e != nil {
 		return e
 	}
@@ -141,6 +173,12 @@ func (s *Store) Save(ctx context.Context, b []byte) error {
 	}
 	if n != 1 {
 		return ErrConflict
+	}
+	if e = writeRelations(ctx, tx, state, s.version+1); e != nil {
+		return e
+	}
+	if e = tx.Commit(); e != nil {
+		return e
 	}
 	s.version++
 	return nil

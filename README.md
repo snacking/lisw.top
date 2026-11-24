@@ -13,7 +13,7 @@ WSL 实际为 mirrored，Windows 到 localhost 的 HTTP 已验证。此前无法
 
 ## 数据库
 数据库独立于 backend/database：mysql.go 管理连接、CA 校验 TLS、连接池和持久化；sql/ 存放 DDL 与参数化 DML，certs/ 仅保存公开 CA。
-当前用 lisw_panel_state 的单行 JSON 保存完整工作空间，并用全局 version 做乐观并发控制，服务配置还有独立 revision。启动时幂等建表、恢复状态；保存成功才通知用户，失败恢复内存。多实例每 5 秒同步数据库，实例内修改即时经 SSE 通知。
+已建立用户、Endpoint、运行节点、服务及两级成员权限关系表，详见 docs/schema.md。已有 JSON 快照保留为兼容读模型；关系表和快照在同一事务中保存，并用全局 version 做乐观并发控制。启动时幂等建表、回填现有数据；多实例每 5 秒同步，实例内修改即时经 SSE 通知。
 
 连接配置优先读取 DATABASE_CONFIG_FILE 指定的私有 JSON（字段 url、caFile）；也可用 DATABASE_URL、DATABASE_CA_FILE。本机私有文件位于 ~/.config/lisw-panel/database.json，权限 600，不在 Git 内。无数据库配置时仍支持内存演示，配置存在但连接失败则启动失败，不会静默退回内存。
 
@@ -29,7 +29,7 @@ VPS 私有数据库配置 /etc/lisw-panel/database.json 由 systemd LoadCredenti
 
 ## GitHub Actions
 main 推送和 PR 自动在 GitHub runner 上运行 Go 测试、前端构建、静态二进制编译并上传 artifact；手动 workflow_dispatch 勾选 deploy 时下载该 artifact 部署。mock-preview Environment（或仓库）需要 VPS_SSH_KEY、VPS_KNOWN_HOSTS 两个 secrets。VPS_HOST、VPS_USER 可选，默认 198.12.74.38、root。数据库密码已独立保存在 VPS，不需进入 Actions 构建或构建包。
-当前 gh 令牌缺少 Secrets 写权限（HTTP 403），需仓库所有者在 GitHub 设置这些 secrets 后才能启用云端 CD。
+GitHub Actions 与 Secrets 读写权限已验证；云端 CD 需要上述两个部署 secrets。
 
 ## 验证
 ```bash
