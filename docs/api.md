@@ -18,3 +18,6 @@
 错误体 {error:string}；401 未登录、403 无权限、404 不存在、409 配置版本冲突、422 配置字段错误。配置须有 host、credential、有效 port，协议字段由服务驱动扩展。实际 VPS 服务完全不接入 API。
 
 内存重启回到种子状态；SSE 断开自动重连后重新获取快照。事件只发送无敏感内容的刷新信号，可见服务由快照接口重新判定。
+
+## 持久化更新
+配置已接入真实 MySQL；DATABASE_CONFIG_FILE 指向仓库外的私有连接文件。数据库 DDL/DML 与 TLS 配置集中在 backend/database。服务操作仍为 Mock，Redis 和邮件仍为 Mock。/api/health 和 /api/snapshot 增加 storage，值为 mysql 或 memory。数据库写失败返回 503，跨实例状态冲突返回 409。实例内即时 SSE，跨实例每 5 秒读取数据库并通知。

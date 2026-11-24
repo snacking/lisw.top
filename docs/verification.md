@@ -18,3 +18,12 @@
 - MySQL CA 与主机名校验的真实 TLS 连接成功；幂等 DDL 成功；API 写入后独立进程恢复相同配置与 revision，验证通过。
 - 数据库不可用时恢复内存、跨实例同步触发 SSE 的竞态测试通过；go vet、生产构建、shell/YAML 检查通过。
 - GitHub PAT 对 Actions secrets API 返回 403；未尝试将数据库密码写入 Git 或 artifact。
+
+## 已完成的部署验证
+- GitHub CI 成功：https://github.com/snacking/lisw.top/actions/runs/45402329877 。GitHub runner 构建并上传 panel-linux-amd64，约 3MB。
+- 本机预编译包已上传并安装到 VPS /opt/lisw-panel/releases/9df43ce-local；lisw-panel.service 为 active，首页与 API 返回 200，storage=mysql。
+- VPS 监听仅 127.0.0.1:18081，MemoryMax=96MiB、CPUQuota=30%。部署过程没有运行编译器。
+- nginx-fake 仍运行于 8080/9443，xray、hy2、uptime-kuma 和 nginx-fake 均未重启。
+- 本地修改 -> MySQL -> VPS API 的跨实例同步验证通过，测试后的演示 sni 已恢复。
+- 本地预览交由用户 systemd 服务持续运行并启用 linger；临时 8082 测试进程已停止。
+- 云端 CD 尚需仓库所有者配置 VPS_SSH_KEY、VPS_KNOWN_HOSTS；当前令牌访问 secrets API 被 GitHub 以 403 拒绝。实际 VPS 部署已通过本机预编译上传路径完成。
