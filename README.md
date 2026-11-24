@@ -1,30 +1,40 @@
 # lisw. 私人服务面板
-Vue 3 + TypeScript + Vite / Go 标准库。当前版本是完整交互的内存 Mock，重启清空修改。不验证登录注册，演示页可选择管理员；不可用于真实认证或真实凭据。
+Vue 3 + TypeScript + Vite / Go。仓库：git@github.com:snacking/lisw.top.git。
+服务控制、升级和连接凭据仍为 Mock；MySQL 已真实接入并持久化状态。登录注册按需求不验证，不用于保存真实服务凭据。Redis 和邮件保持 Mock。
 
-## 本地运行（WSL）
+## WSL 本地预览
 ```bash
 cd /home/sn4ck/workspace/Git/lisw.top
-source ~/.local/toolchains/env
-cd frontend && npm ci && npm run build
-cd ../backend && go run .
-# http://localhost:8081
+bash scripts/dev.sh
 ```
-开发时两个终端分别运行 `cd backend && go run .` 和 `cd frontend && npm run dev`，访问 http://localhost:5173。Vite 代理 /api 到 Go。
+访问 http://localhost:8081 或 http://127.0.0.1:8081。已安装用户服务 lisw-panel-dev，终端退出仍可访问；`systemctl --user status lisw-panel-dev` 查看状态，`systemctl --user restart lisw-panel-dev` 重启，`systemctl --user stop lisw-panel-dev` 停止。DEV_FOREGROUND=1 bash scripts/dev.sh 可前台运行（先停止已有服务）。
 
-## 功能
-总览、入口、服务配置、显示/复制连接 URI、管理员配置编辑/启停/模拟升级、成员权限、活动记录、SSE 实时同步与自动重连、响应式布局、减少动态效果适配。凭据是虚构数据，复制链接不能连接真实 VPS。
+WSL 实际为 mirrored，Windows 到 localhost 的 HTTP 已验证。此前无法访问源于预览服务已停止，不需要关闭防火墙或改网络模式。
 
-Endpoint 表示 IP/域名入口，Runtime 表示部署位置，Service 连接两者。Endpoint 管理员拥有全部服务管理权限；Endpoint 用户需额外有服务成员权限。ServiceDriver 注册表现支持 Hysteria2/VLESS mock；可增加 Minecraft、TeamSpeak 和远程代理驱动。Repository/Cache/Mailer 是后续真实依赖的替换边界；本版状态存储 Memory，数据库持久化未实现。SSE 只发刷新信号，读取快照时检查权限。配置保存携带 revision，冲突返回 409。
+## 数据库
+数据库独立于 backend/database：mysql.go 管理连接、CA 校验 TLS、连接池和持久化；sql/ 存放 DDL 与参数化 DML，certs/ 仅保存公开 CA。
+当前用 lisw_panel_state 的单行 JSON 保存完整工作空间，并用全局 version 做乐观并发控制，服务配置还有独立 revision。启动时幂等建表、恢复状态；保存成功才通知用户，失败恢复内存。多实例每 5 秒同步数据库，实例内修改即时经 SSE 通知。
 
-## 检查
+连接配置优先读取 DATABASE_CONFIG_FILE 指定的私有 JSON（字段 url、caFile）；也可用 DATABASE_URL、DATABASE_CA_FILE。本机私有文件位于 ~/.config/lisw-panel/database.json，权限 600，不在 Git 内。无数据库配置时仍支持内存演示，配置存在但连接失败则启动失败，不会静默退回内存。
+
+## 构建与部署
+```bash
+bash scripts/build-release.sh   # 本机编译 Linux amd64 成品
+bash scripts/deploy-local.sh    # 本机编译后 scp 到 racknerd
+```
+产物 artifacts/panel-linux-amd64.tar.gz 包含 Go 静态二进制、前端 dist、CA、systemd unit、校验和。VPS 仅校验、解包、重启；没有 Go/npm/Docker 编译。
+部署位置 /opt/lisw-panel，服务 lisw-panel，监听 127.0.0.1:18081；CPUQuota 30%、MemoryMax 96M，独立于 sw_proxy_infra，完全不修改 nginx-fake 的 8080/9443 或 Docker Compose。
+VPS 私有数据库配置 /etc/lisw-panel/database.json 由 systemd LoadCredential 传给动态用户，配置中的 caFile=/opt/lisw-panel/current/certs/aiven-ca.pem。
+远程预览可用 `ssh -L 18081:127.0.0.1:18081 racknerd` 后访问 http://localhost:18081。
+
+## GitHub Actions
+main 推送和 PR 自动在 GitHub runner 上运行 Go 测试、前端构建、静态二进制编译并上传 artifact；手动 workflow_dispatch 勾选 deploy 时下载该 artifact 部署。mock-preview Environment（或仓库）需要 VPS_SSH_KEY、VPS_KNOWN_HOSTS 两个 secrets。VPS_HOST、VPS_USER 可选，默认 198.12.74.38、root。数据库密码已独立保存在 VPS，不需进入 Actions 构建或构建包。
+当前 gh 令牌缺少 Secrets 写权限（HTTP 403），需仓库所有者在 GitHub 设置这些 secrets 后才能启用云端 CD。
+
+## 验证
 ```bash
 cd backend && go test -race ./... && go vet ./...
 cd ../frontend && npm run build
 ```
-
-## GitHub Actions
-推送 main 或 PR 执行前后端构建、Go 权限/冲突测试并打包 Linux artifact。手动 workflow_dispatch 勾选 deploy 才部署独立 mock 预览：GitHub Environment `mock-preview` 配置 secrets `VPS_SSH_KEY`、`VPS_KNOWN_HOSTS`，variables `VPS_HOST=198.12.74.38`、`VPS_USER`（具有免密 sudo 的部署账号）。known_hosts 从已可信的 SSH 指纹建立，不能在 CI 中临时无条件信任。部署至 /opt/lisw-panel，不修改现有 Docker 服务；失败恢复旧 symlink。
-
-默认部署只监听 VPS 127.0.0.1:18081，通过 `ssh -i ~/.ssh/id_racknerd -L 18081:127.0.0.1:18081 root@198.12.74.38` 预览。本阶段不配置公开反代，因为用户明确要求不校验登录。仓库尚无远程地址，工作流文件准备好后需推送到你的 GitHub 仓库并配置以上环境变量，才能实际执行。
-
-详见 docs/interaction.md 与 docs/infrastructure.md。生产化需实现真正身份认证、成员管理写接口、持久化、密钥保护、审计、真实驱动与任务执行队列；本次不包含这些真实集成。
+Endpoint 区分入口 IP/域名、Runtime 表示实际部署机器；端点管理员可管理全部服务，服务管理员只操作授权服务。服务接口后续可注册 Minecraft / TeamSpeak 驱动。成员管理写接口、真实认证和真实服务控制仍属后续范围。
+详见 docs/interaction.md、docs/api.md、docs/infrastructure.md、docs/verification.md。

@@ -5,7 +5,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"lisw.top/panel/database"
 	"log"
 	"net/http"
 	"os"
@@ -103,12 +105,44 @@ func seed() *Memory {
 	return &Memory{Endpoints: []Endpoint{{"racknerd", "RackNerd · US West", "198.12.74.38", "美国 · 洛杉矶", members}}, Runtimes: []Runtime{{"vps", "RackNerd VPS", "本机部署"}}, Services: []Service{{"hy2", "racknerd", "vps", "hysteria2", "Hysteria 2", "running", "v2 · mock", 1, now, map[string]string{"host": "198.12.74.38", "port": "443", "credential": "demo-hy2-friends-only", "sni": "example.com"}, members, ""}, {"vless", "racknerd", "vps", "vless", "VLESS · Reality", "running", "26.6.27 · mock", 1, now, map[string]string{"host": "198.12.74.38", "port": "8443", "credential": "00000000-0000-4000-8000-000000000001", "sni": "example.com", "publicKey": "DEMO_PUBLIC_KEY", "shortId": "0123456789abcdef", "flow": "xtls-rprx-vision"}, members, ""}}, Events: []Event{{1, "系统", "演示环境已就绪", now}}, Subscribers: map[chan struct{}]bool{}}
 }
 
+type Persistence interface {
+	Save(context.Context, []byte) error
+	Load(context.Context) ([]byte, error)
+}
+type persistedState struct {
+	Endpoints []Endpoint
+	Runtimes  []Runtime
+	Services  []Service
+	Events    []Event
+}
+
+func (m *Memory) encode() []byte {
+	b, e := json.Marshal(persistedState{m.Endpoints, m.Runtimes, m.Services, m.Events})
+	if e != nil {
+		panic(e)
+	}
+	return b
+}
+func (m *Memory) restore(b []byte) error {
+	var s persistedState
+	if e := json.Unmarshal(b, &s); e != nil {
+		return e
+	}
+	m.Endpoints = s.Endpoints
+	m.Runtimes = s.Runtimes
+	m.Services = s.Services
+	m.Events = s.Events
+	return nil
+}
+
 type App struct {
-	Store    *Memory
-	Drivers  map[string]ServiceDriver
-	Cache    Cache
-	Mail     Mailer
-	Sessions sync.Map
+	Persist      Persistence
+	DatabaseMode string
+	Store        *Memory
+	Drivers      map[string]ServiceDriver
+	Cache        Cache
+	Mail         Mailer
+	Sessions     sync.Map
 }
 
 func role(ms []Membership, id string) string {
@@ -150,7 +184,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if r.URL.Path == "/api/health" {
-		jsonOut(w, 200, map[string]string{"status": "ok", "mode": "mock"})
+		jsonOut(w, 200, map[string]string{"status": "ok", "mode": "mock", "storage": a.DatabaseMode})
 		return
 	}
 	if r.URL.Path == "/api/login" || r.URL.Path == "/api/register" {
@@ -271,7 +305,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				ev = append(ev, v)
 			}
 		}
-		jsonOut(w, 200, map[string]any{"endpoints": es, "runtimes": rs, "services": ss, "events": ev, "userId": id, "mode": "mock"})
+		jsonOut(w, 200, map[string]any{"endpoints": es, "runtimes": rs, "services": ss, "events": ev, "userId": id, "mode": "mock", "storage": a.DatabaseMode})
 		return
 	}
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
@@ -291,6 +325,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				fail(w, 422, "服务驱动尚未实现")
 				return
 			}
+			before := a.Store.encode()
 			switch action {
 			case "start", "stop":
 				if e := d.Action(action); e != nil {
@@ -329,6 +364,26 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 			a.Cache.Set(r.Context(), s.ID, strconv.Itoa(s.Revision))
 			a.Store.Events = append([]Event{{len(a.Store.Events) + 1, s.Name, action, s.UpdatedAt}}, a.Store.Events...)
+			if a.Persist != nil {
+				ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+				err := a.Persist.Save(ctx, a.Store.encode())
+				cancel()
+				if err != nil {
+					a.Store.restore(before)
+					recoverCtx, recoverCancel := context.WithTimeout(context.Background(), 12*time.Second)
+					if latest, e := a.Persist.Load(recoverCtx); e == nil {
+						a.Store.restore(latest)
+					}
+					recoverCancel()
+					if errors.Is(err, database.ErrConflict) {
+						fail(w, 409, "工作空间已更新，请刷新后重试")
+					} else {
+						log.Printf("database write failed: %T", err)
+						fail(w, 503, "数据库暂时不可用，修改未确认")
+					}
+					return
+				}
+			}
 			for c := range a.Store.Subscribers {
 				select {
 				case c <- struct{}{}:
@@ -341,8 +396,69 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	fail(w, 404, "未找到接口")
 }
+
+// Refresh other instances' writes, retaining SSE subscribers and local sessions.
+func (a *App) syncDatabase(ctx context.Context) error {
+	a.Store.Lock()
+	defer a.Store.Unlock()
+	before := string(a.Store.encode())
+	raw, err := a.Persist.Load(ctx)
+	if err != nil {
+		return err
+	}
+	if err = a.Store.restore(raw); err != nil {
+		return err
+	}
+	if before != string(a.Store.encode()) {
+		for c := range a.Store.Subscribers {
+			select {
+			case c <- struct{}{}:
+			default:
+			}
+		}
+	}
+	return nil
+}
 func main() {
 	a := &App{Store: seed(), Drivers: map[string]ServiceDriver{"hysteria2": MockDriver{"hysteria2"}, "vless": MockDriver{"vless"}}, Cache: MockDependencies{}, Mail: MockDependencies{}}
+	a.DatabaseMode = "memory"
+	cfg, err := database.ConfigFromEnvironment()
+	if err != nil {
+		log.Fatal(err)
+	}
+	if cfg.URL != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		db, err := database.Open(ctx, cfg)
+		if err != nil {
+			cancel()
+			log.Fatal(err)
+		}
+		if err = db.Migrate(ctx); err != nil {
+			cancel()
+			log.Fatal("database migration failed")
+		}
+		state, err := db.Initialize(ctx, a.Store.encode())
+		cancel()
+		if err != nil {
+			log.Fatal("database initialization failed")
+		}
+		if err = a.Store.restore(state); err != nil {
+			log.Fatal("invalid persisted workspace")
+		}
+		a.Persist = db
+		go func() {
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			for range ticker.C {
+				ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+				a.syncDatabase(ctx)
+				cancel()
+			}
+		}()
+		a.DatabaseMode = "mysql"
+		defer db.Close()
+		log.Print("database TLS verified; MySQL persistence enabled")
+	}
 	mux := http.NewServeMux()
 	mux.Handle("/api/", a)
 	dist := os.Getenv("STATIC_DIR")

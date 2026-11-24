@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -93,5 +95,51 @@ func TestSSERefreshAfterMutation(t *testing.T) {
 	line, err = reader.ReadString('\n')
 	if err != nil || line != "data: refresh\n" {
 		t.Fatalf("update SSE: %q %v", line, err)
+	}
+}
+
+type fakePersistence struct {
+	raw  []byte
+	fail bool
+}
+
+func (f *fakePersistence) Save(_ context.Context, b []byte) error {
+	if f.fail {
+		return errors.New("database offline")
+	}
+	f.raw = b
+	return nil
+}
+func (f *fakePersistence) Load(context.Context) ([]byte, error) { return f.raw, nil }
+func TestDatabaseFailureRollback(t *testing.T) {
+	a := testApp()
+	initial := a.Store.encode()
+	a.Persist = &fakePersistence{raw: initial, fail: true}
+	a.Sessions.Store("a", "admin")
+	if w := request(a, "POST", "/api/services/hy2/stop", "{}", "a"); w.Code != 503 {
+		t.Fatalf("got %d", w.Code)
+	}
+	if string(a.Store.encode()) != string(initial) {
+		t.Fatal("failed write changed memory")
+	}
+}
+func TestCrossInstanceRefresh(t *testing.T) {
+	a := testApp()
+	other := seed()
+	other.Services[0].Revision = 7
+	other.Services[0].Config["credential"] = "demo-other-instance"
+	a.Persist = &fakePersistence{raw: other.encode()}
+	ch := make(chan struct{}, 1)
+	a.Store.Subscribers[ch] = true
+	if e := a.syncDatabase(context.Background()); e != nil {
+		t.Fatal(e)
+	}
+	if a.Store.Services[0].Revision != 7 {
+		t.Fatal("state not refreshed")
+	}
+	select {
+	case <-ch:
+	default:
+		t.Fatal("no SSE refresh")
 	}
 }

@@ -1,6 +1,7 @@
 [Unit]
-Description=lisw mock panel (loopback preview)
-After=network.target
+Description=lisw isolated service panel
+After=network-online.target
+Wants=network-online.target
 [Service]
 Type=simple
 DynamicUser=yes
@@ -8,7 +9,15 @@ WorkingDirectory=/opt/lisw-panel/current
 ExecStart=/opt/lisw-panel/current/panel
 Environment=LISTEN_ADDR=127.0.0.1:18081
 Environment=STATIC_DIR=/opt/lisw-panel/current/dist
+Environment=DATABASE_CONFIG_FILE=%d/database.json
+Environment=GOMEMLIMIT=64MiB
+Environment=GOMAXPROCS=1
+LoadCredential=database.json:/etc/lisw-panel/database.json
 Restart=on-failure
+RestartSec=5
+MemoryMax=96M
+CPUQuota=30%
+TasksMax=32
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
