@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -109,13 +110,50 @@ func addressType(address string) string {
 
 // Snapshot and relational records are written in one transaction. The snapshot remains
 // the compatible API read model and retains the event history during migration.
-func writeRelations(ctx context.Context, tx *sql.Tx, state relationState, version uint64) error {
-	exec := func(name string, args ...any) error {
-		_, e := tx.ExecContext(ctx, query(name), args...)
-		if e != nil {
-			return fmt.Errorf("%s: %w", name, e)
+func writeRelations(ctx context.Context, tx *sql.Tx, state relationState, version uint64, previous *relationState) error {
+	batch := func(name string, rows [][]any) error {
+		if len(rows) == 0 {
+			return nil
+		}
+		q := query(name)
+		start := strings.Index(q, " VALUES (")
+		if start < 0 {
+			return errors.New("invalid insert template")
+		}
+		start += len(" VALUES ")
+		end := strings.Index(q[start:], ")") + start + 1
+		values := make([]string, len(rows))
+		args := []any{}
+		for i, row := range rows {
+			values[i] = q[start:end]
+			args = append(args, row...)
+		}
+		_, err := tx.ExecContext(ctx, q[:start]+strings.Join(values, ",")+q[end:], args...)
+		if err != nil {
+			return fmt.Errorf("%s: %w", name, err)
 		}
 		return nil
+	}
+	oldEndpoints := map[string]endpointRecord{}
+	oldRuntimes := map[string]runtimeRecord{}
+	oldServices := map[string]serviceRecord{}
+	knownUsers := map[string]bool{}
+	if previous != nil {
+		for _, e := range previous.Endpoints {
+			oldEndpoints[e.ID] = e
+			for _, m := range e.Members {
+				knownUsers[m.UserID] = true
+			}
+		}
+		for _, r := range previous.Runtimes {
+			oldRuntimes[r.ID] = r
+		}
+		for _, s := range previous.Services {
+			oldServices[s.ID] = s
+			for _, m := range s.Members {
+				knownUsers[m.UserID] = true
+			}
+		}
 	}
 	users := map[string]bool{}
 	for _, e := range state.Endpoints {
@@ -128,17 +166,25 @@ func writeRelations(ctx context.Context, tx *sql.Tx, state relationState, versio
 			users[m.UserID] = true
 		}
 	}
-	ids := make([]string, 0, len(users))
+	ids := []string{}
 	for id := range users {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	for _, id := range ids {
-		if err := exec("upsert_user.sql", id, id, id); err != nil {
-			return err
+		if !knownUsers[id] {
+			ids = append(ids, id)
 		}
 	}
+	sort.Strings(ids)
+	rows := [][]any{}
+	for _, id := range ids {
+		rows = append(rows, []any{id, id, id})
+	}
+	if err := batch("upsert_user.sql", rows); err != nil {
+		return err
+	}
+	rows = [][]any{}
 	for _, e := range state.Endpoints {
+		if old, ok := oldEndpoints[e.ID]; ok && reflect.DeepEqual(old, e) {
+			continue
+		}
 		owner := "admin"
 		for _, m := range e.Members {
 			if m.Role == "admin" {
@@ -150,43 +196,96 @@ func writeRelations(ctx context.Context, tx *sql.Tx, state relationState, versio
 		if e.ID == "racknerd" {
 			provider = "RackNerd"
 		}
-		if err := exec("upsert_endpoint.sql", e.ID, e.Name, e.Address, addressType(e.Address), e.Region, provider, owner); err != nil {
-			return err
-		}
+		rows = append(rows, []any{e.ID, e.Name, e.Address, addressType(e.Address), e.Region, provider, owner})
 	}
+	if err := batch("upsert_endpoint.sql", rows); err != nil {
+		return err
+	}
+	rows = [][]any{}
 	for _, r := range state.Runtimes {
+		if old, ok := oldRuntimes[r.ID]; ok && reflect.DeepEqual(old, r) {
+			continue
+		}
 		var address any
-		for _, s := range state.Services {
-			if s.RuntimeID == r.ID && r.ID == "vps" {
+		for _, service := range state.Services {
+			if service.RuntimeID == r.ID && r.ID == "vps" {
 				for _, e := range state.Endpoints {
-					if e.ID == s.EndpointID {
+					if e.ID == service.EndpointID {
 						address = e.Address
 					}
 				}
 			}
 		}
-		if err := exec("upsert_runtime.sql", r.ID, r.Name, r.Location, address); err != nil {
-			return err
-		}
+		rows = append(rows, []any{r.ID, r.Name, r.Location, address})
 	}
+	if err := batch("upsert_runtime.sql", rows); err != nil {
+		return err
+	}
+	rows = [][]any{}
 	for _, s := range state.Services {
+		if old, ok := oldServices[s.ID]; ok && reflect.DeepEqual(old, s) {
+			continue
+		}
 		config, e := json.Marshal(s.Config)
 		if e != nil {
 			return e
 		}
 		at, _ := time.Parse(time.RFC3339, s.UpdatedAt)
-		if err := exec("upsert_service.sql", s.ID, s.EndpointID, s.RuntimeID, s.Kind, s.Name, s.Status, s.Version, s.Revision, config, at.UTC()); err != nil {
-			return err
+		rows = append(rows, []any{s.ID, s.EndpointID, s.RuntimeID, s.Kind, s.Name, s.Status, s.Version, s.Revision, config, at.UTC()})
+	}
+	if err := batch("upsert_service.sql", rows); err != nil {
+		return err
+	}
+	endpointRows := [][]any{}
+	serviceRows := [][]any{}
+	if previous == nil {
+		for _, table := range []string{"lisw_service_members", "lisw_endpoint_members"} {
+			if _, err := tx.ExecContext(ctx, "DELETE FROM "+table); err != nil {
+				return err
+			}
 		}
 	}
-	if _, e := tx.ExecContext(ctx, "DELETE FROM lisw_service_members"); e != nil {
-		return e
+	for _, e := range state.Endpoints {
+		if old, ok := oldEndpoints[e.ID]; ok && reflect.DeepEqual(old.Members, e.Members) {
+			continue
+		}
+		if previous != nil {
+			if _, err := tx.ExecContext(ctx, "DELETE FROM lisw_endpoint_members WHERE endpoint_id=?", e.ID); err != nil {
+				return err
+			}
+		}
+		for _, m := range e.Members {
+			endpointRows = append(endpointRows, []any{e.ID, m.UserID, m.Role})
+		}
 	}
-	if _, e := tx.ExecContext(ctx, "DELETE FROM lisw_endpoint_members"); e != nil {
-		return e
+	for _, s := range state.Services {
+		if old, ok := oldServices[s.ID]; ok && reflect.DeepEqual(old.Members, s.Members) {
+			continue
+		}
+		if previous != nil {
+			if _, err := tx.ExecContext(ctx, "DELETE FROM lisw_service_members WHERE service_id=?", s.ID); err != nil {
+				return err
+			}
+		}
+		for _, m := range s.Members {
+			serviceRows = append(serviceRows, []any{s.ID, m.UserID, m.Role})
+		}
 	}
-	// Remove records omitted by the complete workspace snapshot; preserve user identities.
-	deleteMissing := func(table string, ids []string) error {
+	// Complete legacy backfill prunes stale rows. Normal saves prune only actual removals.
+	prune := func(table string, ids []string, oldIDs map[string]bool) error {
+		current := map[string]bool{}
+		for _, id := range ids {
+			current[id] = true
+		}
+		required := previous == nil
+		for id := range oldIDs {
+			if !current[id] {
+				required = true
+			}
+		}
+		if !required {
+			return nil
+		}
 		q := "DELETE FROM " + table
 		args := []any{}
 		if len(ids) > 0 {
@@ -195,43 +294,48 @@ func writeRelations(ctx context.Context, tx *sql.Tx, state relationState, versio
 				args = append(args, id)
 			}
 		}
-		_, e := tx.ExecContext(ctx, q, args...)
-		return e
+		_, err := tx.ExecContext(ctx, q, args...)
+		return err
 	}
 	serviceIDs := []string{}
+	oldIDs := map[string]bool{}
 	for _, s := range state.Services {
 		serviceIDs = append(serviceIDs, s.ID)
 	}
-	if e := deleteMissing("lisw_services", serviceIDs); e != nil {
-		return e
+	for id := range oldServices {
+		oldIDs[id] = true
+	}
+	if err := prune("lisw_services", serviceIDs, oldIDs); err != nil {
+		return err
 	}
 	endpointIDs := []string{}
+	oldIDs = map[string]bool{}
 	for _, e := range state.Endpoints {
 		endpointIDs = append(endpointIDs, e.ID)
 	}
-	if e := deleteMissing("lisw_endpoints", endpointIDs); e != nil {
-		return e
+	for id := range oldEndpoints {
+		oldIDs[id] = true
+	}
+	if err := prune("lisw_endpoints", endpointIDs, oldIDs); err != nil {
+		return err
 	}
 	runtimeIDs := []string{}
+	oldIDs = map[string]bool{}
 	for _, r := range state.Runtimes {
 		runtimeIDs = append(runtimeIDs, r.ID)
 	}
-	if e := deleteMissing("lisw_runtimes", runtimeIDs); e != nil {
-		return e
+	for id := range oldRuntimes {
+		oldIDs[id] = true
 	}
-	for _, e := range state.Endpoints {
-		for _, m := range e.Members {
-			if err := exec("insert_endpoint_member.sql", e.ID, m.UserID, m.Role); err != nil {
-				return err
-			}
-		}
+	if err := prune("lisw_runtimes", runtimeIDs, oldIDs); err != nil {
+		return err
 	}
-	for _, s := range state.Services {
-		for _, m := range s.Members {
-			if err := exec("insert_service_member.sql", s.ID, m.UserID, m.Role); err != nil {
-				return err
-			}
-		}
+	if err := batch("insert_endpoint_member.sql", endpointRows); err != nil {
+		return err
 	}
-	return exec("upsert_relational_sync.sql", version)
+	if err := batch("insert_service_member.sql", serviceRows); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, query("upsert_relational_sync.sql"), version)
+	return err
 }

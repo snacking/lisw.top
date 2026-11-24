@@ -27,3 +27,5 @@
 - 本地修改 -> MySQL -> VPS API 的跨实例同步验证通过，测试后的演示 sni 已恢复。
 - 本地预览交由用户 systemd 服务持续运行并启用 linger；临时 8082 测试进程已停止。
 - 云端 CD 尚需仓库所有者配置 VPS_SSH_KEY、VPS_KNOWN_HOSTS；当前令牌访问 secrets API 被 GitHub 以 403 拒绝。实际 VPS 部署已通过本机预编译上传路径完成。
+## 关系表更新
+已执行真实 MySQL 集成检查：snacking 管理员、RackNerd Endpoint、服务配置与成员回填、重复迁移、关系表约束失败时快照回滚均通过。优化后的增量保存 API 已通过实际请求，配置内容不变并正确递增版本。

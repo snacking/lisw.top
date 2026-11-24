@@ -27,8 +27,9 @@ type Config struct {
 	CAFile string `json:"caFile"`
 }
 type Store struct {
-	db      *sql.DB
-	version uint64
+	db        *sql.DB
+	version   uint64
+	lastState relationState
 }
 
 func ConfigFromEnvironment() (Config, error) {
@@ -138,12 +139,12 @@ func (s *Store) Load(ctx context.Context) ([]byte, error) {
 	if e != nil && !errors.Is(e, sql.ErrNoRows) {
 		return nil, e
 	}
+	state, e := decodeRelations(b)
+	if e != nil {
+		return nil, e
+	}
 	if synced != version {
-		state, e := decodeRelations(b)
-		if e != nil {
-			return nil, e
-		}
-		if e = writeRelations(ctx, tx, state, version); e != nil {
+		if e = writeRelations(ctx, tx, state, version, nil); e != nil {
 			return nil, e
 		}
 	}
@@ -151,6 +152,7 @@ func (s *Store) Load(ctx context.Context) ([]byte, error) {
 		return nil, e
 	}
 	s.version = version
+	s.lastState = state
 	return b, nil
 }
 func (s *Store) Save(ctx context.Context, b []byte) error {
@@ -174,13 +176,14 @@ func (s *Store) Save(ctx context.Context, b []byte) error {
 	if n != 1 {
 		return ErrConflict
 	}
-	if e = writeRelations(ctx, tx, state, s.version+1); e != nil {
+	if e = writeRelations(ctx, tx, state, s.version+1, &s.lastState); e != nil {
 		return e
 	}
 	if e = tx.Commit(); e != nil {
 		return e
 	}
 	s.version++
+	s.lastState = state
 	return nil
 }
 func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }

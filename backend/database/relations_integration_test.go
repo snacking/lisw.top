@@ -99,7 +99,7 @@ func TestLiveRelationalMigration(t *testing.T) {
 	if _, e = tx.ExecContext(ctx, query("update_state.sql"), before, version); e != nil {
 		t.Fatal(e)
 	}
-	if e = writeRelations(ctx, tx, bad, version+1); e == nil {
+	if e = writeRelations(ctx, tx, bad, version+1, nil); e == nil {
 		t.Fatal("expected relational write failure")
 	}
 	if e = tx.Rollback(); e != nil {

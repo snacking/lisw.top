@@ -39,3 +39,5 @@ DDL 独立存放于 backend/database/sql/002–008，参数化 DML 单独存放�
 API 暂时继续通过快照读模型工作，因此直接手动修改关系表不会自动反馈到 API；应通过应用写入以保持两者一致。用户资料不随快照覆盖或删除。当前没有实现用户管理/成员管理写 API，后续可在同一事务中扩展，不应维护两套独立数据源。
 
 检查：go test ./database；显式执行线上集成检查：LISW_DB_INTEGRATION=1 DATABASE_CONFIG_FILE=~/.config/lisw-panel/database.json go test ./database -run TestLiveRelationalMigration -v。
+
+正常保存按上一版本计算差异：只更新变动实体和成员关系，批量插入同类记录；删除仅在确实移除资源时执行。首次回填仍执行完整同步。远程 MySQL 实际 API 保存验证约 3.5 秒，事务失败回滚和原配置保留均已检查。
