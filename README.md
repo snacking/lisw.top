@@ -1,6 +1,6 @@
 # lisw. 私人服务面板
 Vue 3 + TypeScript + Vite / Go。仓库：git@github.com:snacking/lisw.top.git。
-服务控制、升级和连接凭据仍为 Mock；MySQL 已真实接入并持久化状态。登录注册按需求不验证，不用于保存真实服务凭据。Redis 和邮件保持 Mock。
+服务控制、升级和连接凭据仍为 Mock；MySQL 已真实接入并持久化状态。登录使用真实数据库账号与密码哈希校验，注册暂未开放。Redis 和邮件保持 Mock。
 
 ## WSL 本地预览
 ```bash
@@ -40,3 +40,6 @@ Endpoint 区分入口 IP/域名、Runtime 表示实际部署机器；端点管�
 详见 docs/interaction.md、docs/api.md、docs/infrastructure.md、docs/verification.md。
 
 DDL 与 DML 已分别存放于 backend/database/sql/ddl、sql/dml。部署用 panel --migrate 显式执行带锁、版本和校验和的迁移；普通应用启动不执行 DDL。详见 docs/schema.md 的发布规则。
+
+## 登录校验
+用户名或邮箱 + 密码；账号必须 active、非演示账号且已设置 password_hash。角色只从数据库读取，不能通过请求参数选择。会话 Cookie 为 HttpOnly、SameSite=Strict，8 小时到期；退出立即失效，旧 demo_session 不再接受。每个来源 IP 每分钟最多 5 次登录请求。登录服务或数据库不可用时拒绝登录。未开放公开注册，/api/register 返回 403。密码不变，仍使用先前单独设置的账号密码。

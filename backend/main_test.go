@@ -18,7 +18,7 @@ func testApp() *App {
 func request(a *App, method, path, body, token string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
 	if token != "" {
-		r.AddCookie(&http.Cookie{Name: "demo_session", Value: token})
+		r.AddCookie(&http.Cookie{Name: "panel_session", Value: token})
 	}
 	w := httptest.NewRecorder()
 	a.ServeHTTP(w, r)
@@ -26,9 +26,9 @@ func request(a *App, method, path, body, token string) *httptest.ResponseRecorde
 }
 func TestPermissionsAndConfigConflict(t *testing.T) {
 	a := testApp()
-	a.Sessions.Store("friend", "friend")
-	a.Sessions.Store("admin", "admin")
-	a.Sessions.Store("outsider", "outsider")
+	a.Sessions.Store("friend", Session{"friend", time.Now().Add(time.Hour)})
+	a.Sessions.Store("admin", Session{"admin", time.Now().Add(time.Hour)})
+	a.Sessions.Store("outsider", Session{"outsider", time.Now().Add(time.Hour)})
 	for _, c := range []struct {
 		method, path, body, token string
 		status                    int
@@ -50,17 +50,10 @@ func TestPermissionsAndConfigConflict(t *testing.T) {
 		t.Fatal("leaked services")
 	}
 }
-func TestNoValidationDemoLogin(t *testing.T) {
-	a := testApp()
-	w := request(a, "POST", "/api/register", `{}`, "")
-	if w.Code != 200 || len(w.Result().Cookies()) != 1 {
-		t.Fatal("demo registration should accept blank input")
-	}
-}
 func TestServiceSpecificAdmin(t *testing.T) {
 	a := testApp()
 	a.Store.Services[0].Members = append(a.Store.Services[0].Members, Membership{"maintainer", "admin"})
-	a.Sessions.Store("m", "maintainer")
+	a.Sessions.Store("m", Session{"maintainer", time.Now().Add(time.Hour)})
 	if request(a, "POST", "/api/services/hy2/stop", "{}", "m").Code != 200 {
 		t.Fatal("service admin denied")
 	}
@@ -71,12 +64,12 @@ func TestServiceSpecificAdmin(t *testing.T) {
 
 func TestSSERefreshAfterMutation(t *testing.T) {
 	a := testApp()
-	a.Sessions.Store("friend", "friend")
-	a.Sessions.Store("admin", "admin")
+	a.Sessions.Store("friend", Session{"friend", time.Now().Add(time.Hour)})
+	a.Sessions.Store("admin", Session{"admin", time.Now().Add(time.Hour)})
 	srv := httptest.NewServer(a)
 	defer srv.Close()
 	r, _ := http.NewRequest("GET", srv.URL+"/api/events", nil)
-	r.AddCookie(&http.Cookie{Name: "demo_session", Value: "friend"})
+	r.AddCookie(&http.Cookie{Name: "panel_session", Value: "friend"})
 	client := &http.Client{Timeout: 3 * time.Second}
 	response, err := client.Do(r)
 	if err != nil {
@@ -115,7 +108,7 @@ func TestDatabaseFailureRollback(t *testing.T) {
 	a := testApp()
 	initial := a.Store.encode()
 	a.Persist = &fakePersistence{raw: initial, fail: true}
-	a.Sessions.Store("a", "admin")
+	a.Sessions.Store("a", Session{"admin", time.Now().Add(time.Hour)})
 	if w := request(a, "POST", "/api/services/hy2/stop", "{}", "a"); w.Code != 503 {
 		t.Fatalf("got %d", w.Code)
 	}

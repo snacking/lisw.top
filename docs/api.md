@@ -21,3 +21,5 @@
 
 ## 持久化更新
 配置已接入真实 MySQL；DATABASE_CONFIG_FILE 指向仓库外的私有连接文件。数据库 DDL/DML 与 TLS 配置集中在 backend/database。服务操作仍为 Mock，Redis 和邮件仍为 Mock。/api/health 和 /api/snapshot 增加 storage，值为 mysql 或 memory。数据库写失败返回 503，跨实例状态冲突返回 409。实例内即时 SSE，跨实例每 5 秒读取数据库并通知。
+## 登录校验已启用（替代早期演示登录说明）
+POST /api/login 请求 {username,password}（也兼容 email 字段），成功返回 userId、数据库角色和不含密码的 user。错误账号/密码统一返回 401；超频 429；数据库异常 503。无验证的注册已关闭，/api/register 返回 403。角色请求参数忽略，旧 demo_session Cookie 无效。会话 panel_session 的有效期为 8 小时，退出会清除；失效会话访问资源返回 401。账号停用后新请求也会拒绝。

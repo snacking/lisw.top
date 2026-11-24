@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -137,6 +135,8 @@ func (m *Memory) restore(b []byte) error {
 }
 
 type App struct {
+	Auth         Authenticator
+	LoginLimiter LoginLimiter
 	Persist      Persistence
 	DatabaseMode string
 	Store        *Memory
@@ -171,7 +171,7 @@ func fail(w http.ResponseWriter, status int, msg string) {
 	jsonOut(w, status, map[string]string{"error": msg})
 }
 func (a *App) user(r *http.Request) string {
-	c, e := r.Cookie("demo_session")
+	c, e := r.Cookie("panel_session")
 	if e != nil {
 		return ""
 	}
@@ -179,7 +179,19 @@ func (a *App) user(r *http.Request) string {
 	if !ok {
 		return ""
 	}
-	return v.(string)
+	session, ok := v.(Session)
+	if !ok || time.Now().After(session.Expires) {
+		a.Sessions.Delete(c.Value)
+		return ""
+	}
+	if a.Auth != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		if _, err := a.Auth.Lookup(ctx, session.UserID); err != nil {
+			return ""
+		}
+	}
+	return session.UserID
 }
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
@@ -188,40 +200,17 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, 200, map[string]string{"status": "ok", "mode": "mock", "storage": a.DatabaseMode})
 		return
 	}
-	if r.URL.Path == "/api/login" || r.URL.Path == "/api/register" {
-		if r.Method != "POST" {
-			fail(w, 405, "method")
-			return
-		}
-		var body struct {
-			Role  string `json:"role"`
-			Email string `json:"email"`
-		}
-		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&body) != nil {
-			fail(w, 400, "无效 JSON")
-			return
-		}
-		id := "friend"
-		if body.Role == "admin" {
-			id = "admin"
-		}
-		b := make([]byte, 32)
-		if _, e := rand.Read(b); e != nil {
-			fail(w, 500, "session")
-			return
-		}
-		token := hex.EncodeToString(b)
-		a.Sessions.Store(token, id)
-		http.SetCookie(w, &http.Cookie{Name: "demo_session", Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil})
-		if r.URL.Path == "/api/register" {
-			a.Mail.Send(r.Context(), body.Email, "mock welcome")
-		}
-		jsonOut(w, 200, map[string]string{"userId": id, "role": body.Role})
+	if r.URL.Path == "/api/login" {
+		a.login(w, r)
+		return
+	}
+	if r.URL.Path == "/api/register" {
+		fail(w, 403, "注册暂未开放")
 		return
 	}
 	id := a.user(r)
 	if id == "" {
-		fail(w, 401, "请先进入演示空间")
+		fail(w, 401, "请先登录")
 		return
 	}
 	if r.Method != "GET" {
@@ -232,9 +221,9 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if r.URL.Path == "/api/logout" && r.Method == "POST" {
-		c, _ := r.Cookie("demo_session")
+		c, _ := r.Cookie("panel_session")
 		a.Sessions.Delete(c.Value)
-		http.SetCookie(w, &http.Cookie{Name: "demo_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
+		http.SetCookie(w, &http.Cookie{Name: "panel_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
 		jsonOut(w, 200, map[string]bool{"ok": true})
 		return
 	}
@@ -264,9 +253,15 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			case <-r.Context().Done():
 				return
 			case <-ch:
+				if a.user(r) == "" {
+					return
+				}
 				fmt.Fprint(w, "data: refresh\n\n")
 				f.Flush()
 			case <-t.C:
+				if a.user(r) == "" {
+					return
+				}
 				fmt.Fprint(w, ": heartbeat\n\n")
 				f.Flush()
 			}
@@ -461,6 +456,7 @@ func main() {
 		if err = a.Store.restore(state); err != nil {
 			log.Fatal("invalid persisted workspace")
 		}
+		a.Auth = db
 		a.Persist = db
 		go func() {
 			ticker := time.NewTicker(5 * time.Second)
