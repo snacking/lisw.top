@@ -9,6 +9,7 @@ import (
 	"lisw.top/panel/database"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -67,7 +68,7 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		fail(w, 403, "origin")
 		return
 	}
-	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	ip := clientIP(r)
 	if !a.LoginLimiter.Allow(ip) {
 		w.Header().Set("Retry-After", "60")
 		fail(w, 429, "尝试次数过多，请稍后再试")
@@ -123,6 +124,19 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	})
 	expiry := time.Now().Add(8 * time.Hour)
 	a.Sessions.Store(token, Session{u.ID, expiry})
-	http.SetCookie(w, &http.Cookie{Name: "panel_session", Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil, Expires: expiry, MaxAge: 8 * 60 * 60})
+	http.SetCookie(w, &http.Cookie{Name: "panel_session", Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil || os.Getenv("COOKIE_SECURE") == "true", Expires: expiry, MaxAge: 8 * 60 * 60})
 	jsonOut(w, 200, map[string]any{"userId": u.ID, "role": u.Role, "user": u})
+}
+
+// Only the dedicated nginx address may supply the client address. Public
+// requests cannot bypass throttling by setting forwarding headers.
+func clientIP(r *http.Request) string {
+	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	trusted := os.Getenv("TRUSTED_PROXY_IP")
+	if trusted != "" && ip == trusted {
+		if forwarded := net.ParseIP(r.Header.Get("X-Real-IP")); forwarded != nil {
+			return forwarded.String()
+		}
+	}
+	return ip
 }

@@ -94,3 +94,28 @@ func TestDisabledAccountSession(t *testing.T) {
 		t.Fatal("disabled user accepted")
 	}
 }
+
+func TestProxySecurity(t *testing.T) {
+	t.Setenv("TRUSTED_PROXY_IP", "172.29.44.2")
+	r := httptest.NewRequest("POST", "/api/login", nil)
+	r.Header.Set("X-Real-IP", "203.0.113.9")
+	r.RemoteAddr = "198.51.100.1:1234"
+	if clientIP(r) != "198.51.100.1" {
+		t.Fatal("untrusted forwarding accepted")
+	}
+	r.RemoteAddr = "172.29.44.2:1234"
+	if clientIP(r) != "203.0.113.9" {
+		t.Fatal("trusted forwarding ignored")
+	}
+	r.Header.Set("X-Real-IP", "invalid")
+	if clientIP(r) != "172.29.44.2" {
+		t.Fatal("invalid address accepted")
+	}
+	t.Setenv("COOKIE_SECURE", "true")
+	a := testApp()
+	a.Auth = &fakeAuth{}
+	w := request(a, "POST", "/api/login", `{"username":"snacking","password":"test-password"}`, "")
+	if w.Code != 200 || !w.Result().Cookies()[0].Secure {
+		t.Fatal("HTTPS proxy cookie lacks Secure")
+	}
+}

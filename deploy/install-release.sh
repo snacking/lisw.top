@@ -12,20 +12,25 @@ sudo tar -xzf "$archive" -C "$release"
 sudo env DATABASE_CONFIG_FILE=/etc/lisw-panel/database.json DATABASE_CA_FILE="$release/certs/aiven-ca.pem" "$release/panel" --migrate
 previous=$(readlink -f /opt/lisw-panel/current || true)
 sudo ln -sfn "$release" /opt/lisw-panel/current
-sudo cp "$release/panel.service" /etc/systemd/system/lisw-panel.service
-sudo systemctl daemon-reload
-sudo systemctl enable lisw-panel
+restart_panel() {
+  if [[ -f /root/sw_proxy_infra/scripts/restart-panel.sh ]]; then
+    sudo bash /root/sw_proxy_infra/scripts/restart-panel.sh
+  else
+    sudo cp /opt/lisw-panel/current/panel.service /etc/systemd/system/lisw-panel.service
+    sudo systemctl daemon-reload
+    sudo systemctl enable lisw-panel
+    sudo systemctl restart lisw-panel
+  fi
+}
 rollback() {
   if [[ -n "$previous" ]]; then
     sudo ln -sfn "$previous" /opt/lisw-panel/current
-    sudo cp "$previous/panel.service" /etc/systemd/system/lisw-panel.service
-    sudo systemctl daemon-reload
-    sudo systemctl restart lisw-panel
+    restart_panel
   else
     sudo systemctl stop lisw-panel || true
   fi
 }
-if ! sudo systemctl restart lisw-panel; then rollback; exit 1; fi
+if ! restart_panel; then rollback; exit 1; fi
 for attempt in $(seq 1 20); do
   if curl -fsS http://127.0.0.1:18081/api/health; then
     rm -f "$archive"
